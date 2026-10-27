@@ -2,7 +2,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const storage = 'maple-skills-v2';
-  const cacheKey = 'maple-ocr-cache-v2';
+  const cacheKey = 'maple-ocr-cache-v3';
   const video = $('video');
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -11,8 +11,16 @@
   const roiFrame = document.createElement('canvas');
   const roiFrameContext = roiFrame.getContext('2d', { willReadFrequently: true });
   const runtime = new Map();
-  let skills = read(storage, []);
-  if (!Array.isArray(skills)) skills = [];
+  let skillsLocked = false;
+  let skills;
+  try {
+    const raw = localStorage.getItem(storage);
+    skills = raw === null ? [] : JSON.parse(raw);
+    if (!Array.isArray(skills)) throw new Error('invalid skill list');
+  } catch {
+    skills = [];
+    skillsLocked = true;
+  }
   let cache = read(cacheKey, {});
   if (!cache || typeof cache !== 'object' || Array.isArray(cache)) cache = {};
   let workerPromise, stream = null, editing = null, draftRoi = null, selection = null, pointer = null, busy = false, audioContext = null;
@@ -22,7 +30,14 @@
   $('notifications').checked = localStorage.getItem(storage + '.notifications') === 'true';
 
   function read(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
-  function save() { localStorage.setItem(storage, JSON.stringify(skills)); }
+  function save(next) {
+    if (skillsLocked) {
+      $('status').textContent = '기존 스킬 목록을 읽지 못해 덮어쓰기를 중지했습니다. 브라우저 저장소를 확인하세요.';
+      return false;
+    }
+    try { localStorage.setItem(storage, JSON.stringify(next)); return true; }
+    catch { $('status').textContent = '스킬 목록을 저장하지 못했습니다. 브라우저 저장 공간이나 권한을 확인하세요.'; return false; }
+  }
   function escapeText(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
   function state(skill) {
     if (!runtime.has(skill.id)) runtime.set(skill.id, { samples: [], next: 0, timer: null, text: '감지 대기' });
@@ -33,11 +48,19 @@
     const card = [...$('list').querySelectorAll('[data-id]')].find(el => el.dataset.id === skill.id);
     if (card) card.querySelector('.timer').textContent = text;
   }
+  function alertDescription(cooldown, duration) {
+    if (!Number.isFinite(cooldown) || cooldown < 1 || !Number.isFinite(duration) || duration < 0) return '쿨타임과 지속시간을 입력하세요.';
+    const remaining = cooldown - duration;
+    if (remaining > 0) return `쿨타임 ${remaining}초 남았을 때 알림`;
+    if (remaining === 0) return '쿨타임 종료 시 알림';
+    return `쿨타임 종료 ${-remaining}초 후 알림`;
+  }
+  function updateAlertHint() { $('alertHint').textContent = alertDescription(Number($('cooldown').value), Number($('duration').value)); }
   function render() {
     $('list').innerHTML = skills.length ? skills.map(skill => `<article class="skill-card" data-id="${escapeText(skill.id)}">
       <div class="card-head"><strong>${escapeText(skill.name)}</strong><label><input data-action="enable" type="checkbox" ${skill.enabled ? 'checked' : ''}> 감지</label></div>
       <span class="timer">${escapeText(state(skill).text)}</span>
-      <span class="hint">쿨타임 ${skill.cooldown}초 · 지속시간 ${skill.duration}초</span>
+      <span class="hint">쿨타임 ${skill.cooldown}초 · 지속시간 ${skill.duration}초<br>${escapeText(alertDescription(skill.cooldown, skill.duration))}</span>
       <div class="card-actions"><button data-action="edit">수정</button><button data-action="reset">다시 감지</button><button data-action="delete">삭제</button></div></article>`).join('') : '<p class="empty">등록된 스킬이 없습니다.</p>';
   }
   function openEdit(skill) {
@@ -46,6 +69,7 @@
     $('name').value = skill?.name || '';
     $('cooldown').value = skill?.cooldown ?? 120;
     $('duration').value = skill?.duration ?? 120;
+    updateAlertHint();
     draftRoi = skill?.roi ? { ...skill.roi } : null;
     $('roiSummary').textContent = draftRoi ? '영역이 지정되었습니다.' : '영역을 지정해 주세요.';
     $('editError').textContent = '';
@@ -58,7 +82,9 @@
   $('cooldown').addEventListener('input', () => {
     if (Number($('duration').value) === oldCooldown) $('duration').value = $('cooldown').value;
     oldCooldown = Number($('cooldown').value);
+    updateAlertHint();
   });
+  $('duration').addEventListener('input', updateAlertHint);
   $('editForm').addEventListener('submit', event => {
     event.preventDefault();
     const name = $('name').value.trim();
@@ -66,10 +92,12 @@
     const cooldown = Number($('cooldown').value), duration = Number($('duration').value);
     if (!Number.isFinite(cooldown) || cooldown < 1 || !Number.isFinite(duration) || duration < 0) return;
     const skill = skills.find(x => x.id === editing);
-    if (skill) Object.assign(skill, { name, cooldown, duration, roi: draftRoi });
-    else skills.push({ id: crypto.randomUUID(), name, cooldown, duration, roi: draftRoi, enabled: true });
+    const updated = skill ? { ...skill, name, cooldown, duration, roi: draftRoi } : { id: crypto.randomUUID(), name, cooldown, duration, roi: draftRoi, enabled: true };
+    const next = skill ? skills.map(x => x.id === editing ? updated : x) : [...skills, updated];
+    if (!save(next)) { $('editError').textContent = '저장하지 못했습니다. 상태 메시지를 확인하세요.'; return; }
+    skills = next;
     if (skill) runtime.delete(skill.id);
-    save(); $('editDialog').close(); render();
+    $('editDialog').close(); render();
   });
   $('list').addEventListener('click', event => {
     const button = event.target.closest('[data-action]');
@@ -77,12 +105,39 @@
     if (!button || !skill) return;
     if (button.dataset.action === 'edit') openEdit(skill);
     if (button.dataset.action === 'reset') { runtime.delete(skill.id); render(); }
-    if (button.dataset.action === 'delete') { skills = skills.filter(x => x.id !== skill.id); runtime.delete(skill.id); save(); render(); }
+    if (button.dataset.action === 'delete') { const next = skills.filter(x => x.id !== skill.id); if (save(next)) { skills = next; runtime.delete(skill.id); render(); } }
   });
   $('list').addEventListener('change', event => {
     if (event.target.dataset.action !== 'enable') return;
     const skill = skills.find(x => x.id === event.target.closest('[data-id]')?.dataset.id);
-    if (skill) { skill.enabled = event.target.checked; runtime.delete(skill.id); save(); render(); }
+    if (skill) { const next = skills.map(x => x.id === skill.id ? { ...x, enabled: event.target.checked } : x); if (save(next)) { skills = next; runtime.delete(skill.id); } render(); }
+  });
+  $('exportSkills').addEventListener('click', () => {
+    if (skillsLocked) { $('status').textContent = '스킬 목록을 읽지 못해 백업을 만들 수 없습니다.'; return; }
+    const blob = new Blob([JSON.stringify({ format: 'maple-skill-timers', version: 1, skills }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a'); link.href = url; link.download = 'maple-skills-backup.json'; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  $('importSkills').addEventListener('click', () => $('importFile').click());
+  $('importFile').addEventListener('change', async event => {
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      if (file.size > 2 * 1024 * 1024) throw new Error('백업 파일이 너무 큽니다.');
+      const backup = JSON.parse(await file.text());
+      if (backup?.format !== 'maple-skill-timers' || backup.version !== 1 || !Array.isArray(backup.skills) || backup.skills.length > 5000 || !backup.skills.every(window.cooldownCore.validSkill)) throw new Error('유효한 스킬 백업 파일이 아닙니다.');
+      const ids = new Set(skills.map(skill => skill.id));
+      const additions = [];
+      for (const skill of backup.skills) {
+        if (!ids.has(skill.id)) { ids.add(skill.id); additions.push(skill); }
+      }
+      if (additions.length && !save([...skills, ...additions])) return;
+      skills = [...skills, ...additions]; render();
+      $('status').textContent = `${additions.length}개의 스킬을 가져왔습니다. 기존 스킬은 유지했습니다.`;
+    } catch (error) { $('status').textContent = error.message || '백업 파일을 읽지 못했습니다.'; }
+    finally { input.value = ''; }
   });
   $('interval').addEventListener('change', () => {
     $('interval').value = String(Math.max(.5, Math.min(30, Number($('interval').value) || 1)));
@@ -243,7 +298,7 @@
     workerPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script'); script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
       script.onload = resolve; script.onerror = () => reject(new Error('숫자 인식기를 불러오지 못했습니다.')); document.head.appendChild(script);
-    }).then(async () => { const worker = await Tesseract.createWorker('eng'); await worker.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '7' }); return worker; }).catch(error => { workerPromise = null; throw error; });
+    }).then(async () => { const worker = await Tesseract.createWorker('eng'); await worker.setParameters({ tessedit_char_whitelist: '0123456789:', tessedit_pageseg_mode: '7' }); return worker; }).catch(error => { workerPromise = null; throw error; });
     return workerPromise;
   }
   function prepareImage(roi) {
@@ -268,19 +323,32 @@
     return { canvas: out, signature: out.toDataURL() };
   }
   async function recognize(image) {
-    if (Number.isInteger(cache[image.signature])) return cache[image.signature];
+    if (Object.hasOwn(cache, image.signature) && Number.isInteger(cache[image.signature]) && cache[image.signature] >= 0 && cache[image.signature] <= 86400) return cache[image.signature];
     const worker = await loadWorker(), result = await worker.recognize(image.canvas);
-    const text = result.data.text.trim().replace(/\s/g, '');
-    return /^\d{1,5}$/.test(text) && result.data.confidence >= 65 ? Number(text) : null;
+    if (result.data.confidence < 65) return null;
+    return window.cooldownCore.parseCooldown(result.data.text);
   }
   function confirm(skill, st) {
     const samples = st.samples.slice(-3), last = samples[2];
     const end = last.time + last.value * 1000;
     st.timer = { end, alertAt: end - skill.cooldown * 1000 + skill.duration * 1000, alerted: false };
     st.samples = [];
-    for (const sample of samples) cache[sample.signature] = sample.value;
-    const keys = Object.keys(cache); for (const key of keys.slice(0, Math.max(0, keys.length - 150))) delete cache[key];
-    try { localStorage.setItem(cacheKey, JSON.stringify(cache)); } catch { cache = {}; }
+    for (const sample of samples) {
+      if (sample.signature.length <= 100000) cache[sample.signature] = sample.value;
+    }
+    let keys = Object.keys(cache);
+    let size = keys.reduce((sum, key) => sum + key.length + 16, 0);
+    while (keys.length > 150 || size > 512000) {
+      const key = keys.shift(); size -= key.length + 16; delete cache[key];
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { localStorage.setItem(cacheKey, JSON.stringify(cache)); break; }
+      catch {
+        keys = Object.keys(cache);
+        if (!keys.length) break;
+        for (const key of keys.slice(0, Math.max(1, Math.ceil(keys.length / 2)))) delete cache[key];
+      }
+    }
   }
   function updateTimer(skill, st, now) {
     const t = st.timer; if (!t) return;
@@ -321,5 +389,7 @@
     } catch (error) { st.samples = []; setText(skill, '숫자 인식 오류'); $('status').textContent = error.message; }
     finally { busy = false; }
   }
-  volumeLabel(); render(); setInterval(tick, 200);
+  volumeLabel(); render();
+  if (skillsLocked) $('status').textContent = '기존 스킬 목록을 읽지 못해 덮어쓰기를 중지했습니다. 브라우저 저장소를 확인하세요.';
+  setInterval(tick, 200);
 })();

@@ -45,7 +45,8 @@
     <label><input id="notifications" type="checkbox"> 브라우저 알림</label>
   </div>
   <p id="status" role="status">화면 공유를 시작해 주세요.</p>
-  <div class="list-head"><h2>스킬 목록</h2><button id="add" class="primary">+ 스킬 추가</button></div>
+  <div class="list-head"><h2>스킬 목록</h2><div class="row"><button id="exportSkills" type="button">백업 내보내기</button><button id="importSkills" type="button">백업 가져오기</button><button id="add" class="primary">+ 스킬 추가</button></div></div>
+  <input id="importFile" type="file" accept="application/json,.json" hidden>
   <div id="list" class="skill-list"></div>
 </main>
 <video id="video" autoplay muted playsinline hidden></video>
@@ -56,6 +57,7 @@
       <label>스킬 이름<input id="name" type="text" maxlength="40" required></label>
       <label>쿨타임 (초)<input id="cooldown" type="number" min="1" max="86400" step="1" value="120" required></label>
       <label>지속시간 (초)<input id="duration" type="number" min="0" max="86400" step="1" value="120" required></label>
+      <p class="hint" id="alertHint"></p>
       <div><button id="selectRoi" type="button">ROI 지정</button><p class="hint" id="roiSummary">영역을 지정해 주세요.</p></div>
     </div>
     <p id="editError" class="hint" role="alert"></p>
@@ -69,6 +71,7 @@
   <div class="actions"><button id="autoFitRoi" type="button">자동 맞춤</button><button id="undoRoiFit" type="button" disabled>맞춤 되돌리기</button><button id="saveRoi" class="primary">영역 적용</button><button id="cancelRoi">취소</button></div>
 </dialog>
 <script defer src="./roi-fit.js?v=20261027-2"></script>
-<script defer src="./skill-v2.js?v=20261027-2"></script>
+<script defer src="./cooldown-core.js?v=1"></script>
+<script defer src="./skill-v2.js?v=20261027-3"></script>
 </body>
 </html>
