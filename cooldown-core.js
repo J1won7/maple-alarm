@@ -14,18 +14,25 @@
     return minutes >= 1 && seconds < 60 ? minutes * 60 + seconds : null;
   }
 
-  function validSkill(skill) {
-    if (!skill || typeof skill !== 'object' || Array.isArray(skill)) return false;
-    const roi = skill.roi;
-    return typeof skill.id === 'string' && skill.id.length > 0 && skill.id.length <= 200 &&
-      typeof skill.name === 'string' && skill.name.trim().length > 0 && skill.name.length <= 40 &&
-      Number.isFinite(skill.cooldown) && skill.cooldown >= 1 && skill.cooldown <= 86400 &&
-      Number.isFinite(skill.duration) && skill.duration >= 0 && skill.duration <= 86400 &&
-      typeof skill.enabled === 'boolean' && roi && typeof roi === 'object' &&
+  function validRoi(roi) {
+    return !!roi && typeof roi === 'object' && !Array.isArray(roi) &&
       [roi.x, roi.y, roi.w, roi.h, roi.aspect].every(Number.isFinite) &&
       roi.x >= 0 && roi.y >= 0 && roi.w > 0 && roi.h > 0 &&
       roi.x + roi.w <= 1.000001 && roi.y + roi.h <= 1.000001 && roi.aspect > 0;
   }
 
-  window.cooldownCore = { parseCooldown, validSkill };
+  function validSkill(skill) {
+    if (!skill || typeof skill !== 'object' || Array.isArray(skill)) return false;
+    const hasLegacyRoi = validRoi(skill.roi);
+    const hasRois = !!skill.rois && typeof skill.rois === 'object' && !Array.isArray(skill.rois) &&
+      Object.keys(skill.rois).length > 0 && Object.entries(skill.rois).every(([key, roi]) => /^\d{1,5}x\d{1,5}$/.test(key) && validRoi(roi));
+    if (skill.rois !== undefined && !hasRois) return false;
+    return typeof skill.id === 'string' && skill.id.length > 0 && skill.id.length <= 200 &&
+      typeof skill.name === 'string' && skill.name.trim().length > 0 && skill.name.length <= 40 &&
+      Number.isFinite(skill.cooldown) && skill.cooldown >= 1 && skill.cooldown <= 86400 &&
+      Number.isFinite(skill.duration) && skill.duration >= 0 && skill.duration <= 86400 &&
+      typeof skill.enabled === 'boolean' && (hasLegacyRoi || hasRois);
+  }
+
+  window.cooldownCore = { parseCooldown, validRoi, validSkill };
 })();

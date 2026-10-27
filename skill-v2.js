@@ -11,6 +11,7 @@
   const roiFrame = document.createElement('canvas');
   const roiFrameContext = roiFrame.getContext('2d', { willReadFrequently: true });
   const runtime = new Map();
+  const visiblePreviews = new Set();
   let skillsLocked = false;
   let skills;
   try {
@@ -24,6 +25,7 @@
   let cache = read(cacheKey, {});
   if (!cache || typeof cache !== 'object' || Array.isArray(cache)) cache = {};
   let workerPromise, stream = null, editing = null, draftRoi = null, selection = null, pointer = null, busy = false, audioContext = null;
+  let draftResolution = null, activeResolution = null, roiFrameResolution = null;
   let beforeFit = null;
   $('interval').value = localStorage.getItem(storage + '.interval') || '1';
   $('volume').value = localStorage.getItem(storage + '.volume') || '100';
@@ -39,6 +41,8 @@
     catch { $('status').textContent = '스킬 목록을 저장하지 못했습니다. 브라우저 저장 공간이나 권한을 확인하세요.'; return false; }
   }
   function escapeText(value) { return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
+  function videoResolution() { return video.videoWidth && video.videoHeight ? `${video.videoWidth}x${video.videoHeight}` : null; }
+  function currentRoi(skill) { return activeResolution && skill.rois ? skill.rois[activeResolution] || null : null; }
   function state(skill) {
     if (!runtime.has(skill.id)) runtime.set(skill.id, { samples: [], next: 0, timer: null, text: '감지 대기' });
     return runtime.get(skill.id);
@@ -47,6 +51,27 @@
     state(skill).text = text;
     const card = [...$('list').querySelectorAll('[data-id]')].find(el => el.dataset.id === skill.id);
     if (card) card.querySelector('.timer').textContent = text;
+  }
+  function paintPreview(skill) {
+    const card = [...$('list').querySelectorAll('[data-id]')].find(el => el.dataset.id === skill.id);
+    if (!card) return;
+    const enabled = visiblePreviews.has(skill.id);
+    const preview = state(skill).preview;
+    const area = card.querySelector('.roi-preview-area');
+    area.hidden = !enabled;
+    if (!enabled) return;
+    const images = card.querySelector('.roi-previews');
+    const raw = card.querySelector('.roi-preview-raw');
+    const processed = card.querySelector('.roi-preview-processed');
+    images.hidden = !preview;
+    card.querySelector('.roi-preview-status').textContent = preview
+      ? state(skill).timer ? '마지막 검출 이미지 · 타이머 진행 중' : '마지막 검출 시도'
+      : '검출 이미지 대기 중';
+    if (preview) {
+      raw.src = preview.raw;
+      if (preview.processed) { processed.src = preview.processed; processed.parentElement.hidden = false; }
+      else { processed.removeAttribute('src'); processed.parentElement.hidden = true; }
+    } else { raw.removeAttribute('src'); processed.removeAttribute('src'); }
   }
   function alertDescription(cooldown, duration) {
     if (!Number.isFinite(cooldown) || cooldown < 1 || !Number.isFinite(duration) || duration < 0) return '쿨타임과 지속시간을 입력하세요.';
@@ -61,7 +86,11 @@
       <div class="card-head"><strong>${escapeText(skill.name)}</strong><label><input data-action="enable" type="checkbox" ${skill.enabled ? 'checked' : ''}> 감지</label></div>
       <span class="timer">${escapeText(state(skill).text)}</span>
       <span class="hint">쿨타임 ${skill.cooldown}초 · 지속시간 ${skill.duration}초<br>${escapeText(alertDescription(skill.cooldown, skill.duration))}</span>
+      <p class="hint">${activeResolution ? `${escapeText(activeResolution)} · ${currentRoi(skill) ? 'ROI 저장됨' : 'ROI 미설정'}` : '화면 공유 후 해상도별 ROI 확인'}</p>
+      <label class="roi-preview-toggle"><input data-action="preview" type="checkbox" ${visiblePreviews.has(skill.id) ? 'checked' : ''}> 검출 이미지 보기</label>
+      <div class="roi-preview-area" hidden><p class="hint roi-preview-status"></p><div class="roi-previews" hidden><figure><img class="roi-preview-raw" alt="검출한 ROI"><figcaption class="hint">ROI 원본</figcaption></figure><figure><img class="roi-preview-processed" alt="숫자 인식 입력 이미지"><figcaption class="hint">숫자 인식 입력</figcaption></figure></div></div>
       <div class="card-actions"><button data-action="edit">수정</button><button data-action="reset">다시 감지</button><button data-action="delete">삭제</button></div></article>`).join('') : '<p class="empty">등록된 스킬이 없습니다.</p>';
+    for (const skill of skills) paintPreview(skill);
   }
   function openEdit(skill) {
     editing = skill?.id || null;
@@ -70,10 +99,17 @@
     $('cooldown').value = skill?.cooldown ?? 120;
     $('duration').value = skill?.duration ?? 120;
     updateAlertHint();
-    draftRoi = skill?.roi ? { ...skill.roi } : null;
-    $('roiSummary').textContent = draftRoi ? '영역이 지정되었습니다.' : '영역을 지정해 주세요.';
+    const roi = skill ? currentRoi(skill) : null;
+    draftRoi = roi ? { ...roi } : null;
+    draftResolution = draftRoi ? activeResolution : null;
+    updateRoiSummary();
     $('editError').textContent = '';
     $('editDialog').showModal();
+  }
+  function updateRoiSummary() {
+    $('roiSummary').textContent = draftRoi
+      ? `${draftResolution} 공유 화면의 영역이 지정되었습니다.`
+      : activeResolution ? `${activeResolution} 공유 화면의 영역이 없습니다.` : '화면 공유를 시작한 뒤 영역을 지정해 주세요.';
   }
   $('add').addEventListener('click', () => openEdit(null));
   $('cancelEdit').addEventListener('click', () => $('editDialog').close());
@@ -88,11 +124,13 @@
   $('editForm').addEventListener('submit', event => {
     event.preventDefault();
     const name = $('name').value.trim();
-    if (!name || !draftRoi) { $('editError').textContent = !name ? '스킬 이름을 입력하세요.' : 'ROI를 먼저 지정해 주세요.'; return; }
+    if (!name || (!editing && !draftRoi)) { $('editError').textContent = !name ? '스킬 이름을 입력하세요.' : 'ROI를 먼저 지정해 주세요.'; return; }
     const cooldown = Number($('cooldown').value), duration = Number($('duration').value);
     if (!Number.isFinite(cooldown) || cooldown < 1 || !Number.isFinite(duration) || duration < 0) return;
     const skill = skills.find(x => x.id === editing);
-    const updated = skill ? { ...skill, name, cooldown, duration, roi: draftRoi } : { id: crypto.randomUUID(), name, cooldown, duration, roi: draftRoi, enabled: true };
+    const rois = { ...(skill?.rois || {}) };
+    if (draftRoi && draftResolution) rois[draftResolution] = draftRoi;
+    const updated = skill ? { ...skill, name, cooldown, duration, ...(Object.keys(rois).length ? { rois } : {}) } : { id: crypto.randomUUID(), name, cooldown, duration, rois, enabled: true };
     const next = skill ? skills.map(x => x.id === editing ? updated : x) : [...skills, updated];
     if (!save(next)) { $('editError').textContent = '저장하지 못했습니다. 상태 메시지를 확인하세요.'; return; }
     skills = next;
@@ -105,12 +143,17 @@
     if (!button || !skill) return;
     if (button.dataset.action === 'edit') openEdit(skill);
     if (button.dataset.action === 'reset') { runtime.delete(skill.id); render(); }
-    if (button.dataset.action === 'delete') { const next = skills.filter(x => x.id !== skill.id); if (save(next)) { skills = next; runtime.delete(skill.id); render(); } }
+    if (button.dataset.action === 'delete') { const next = skills.filter(x => x.id !== skill.id); if (save(next)) { skills = next; runtime.delete(skill.id); visiblePreviews.delete(skill.id); render(); } }
   });
   $('list').addEventListener('change', event => {
-    if (event.target.dataset.action !== 'enable') return;
     const skill = skills.find(x => x.id === event.target.closest('[data-id]')?.dataset.id);
-    if (skill) { const next = skills.map(x => x.id === skill.id ? { ...x, enabled: event.target.checked } : x); if (save(next)) { skills = next; runtime.delete(skill.id); } render(); }
+    if (!skill) return;
+    if (event.target.dataset.action === 'preview') {
+      if (event.target.checked) visiblePreviews.add(skill.id);
+      else { visiblePreviews.delete(skill.id); state(skill).preview = null; }
+      paintPreview(skill);
+    }
+    if (event.target.dataset.action === 'enable') { const next = skills.map(x => x.id === skill.id ? { ...x, enabled: event.target.checked } : x); if (save(next)) { skills = next; runtime.delete(skill.id); } render(); }
   });
   $('exportSkills').addEventListener('click', () => {
     if (skillsLocked) { $('status').textContent = '스킬 목록을 읽지 못해 백업을 만들 수 없습니다.'; return; }
@@ -169,6 +212,28 @@
     }
     audio.play().catch(() => { $('status').textContent = '소리를 재생하지 못했습니다. 브라우저의 음소거 설정을 확인하세요.'; });
   }
+  function syncResolution() {
+    const nextResolution = videoResolution();
+    if (!stream || !nextResolution || nextResolution === activeResolution) return;
+    activeResolution = nextResolution;
+    const aspect = video.videoWidth / video.videoHeight;
+    let migrated = 0;
+    const next = skills.map(skill => {
+      if (skill.rois || !window.cooldownCore.validRoi(skill.roi) || Math.abs(aspect / skill.roi.aspect - 1) > .03) return skill;
+      migrated++;
+      return { ...skill, rois: { [nextResolution]: { ...skill.roi } } };
+    });
+    if (migrated && save(next)) {
+      skills = next;
+      $('status').textContent = `기존 ROI ${migrated}개를 현재 공유 해상도 ${nextResolution}에 연결했습니다. 위치를 확인해 주세요.`;
+    }
+    for (const skill of skills) {
+      const st = state(skill);
+      st.samples = []; st.next = 0; st.preview = null;
+      if (!st.timer) st.text = currentRoi(skill) ? '감지 대기' : '현재 해상도 ROI 미설정';
+    }
+    render();
+  }
   $('testSound').addEventListener('click', () => { prepareAudio(); sound(); });
   $('share').addEventListener('click', async () => {
     prepareAudio();
@@ -178,13 +243,15 @@
       stream = next; video.srcObject = stream; await video.play();
       next.getVideoTracks()[0].addEventListener('ended', () => { if (stream === next) stop(); }, { once: true });
       $('share').disabled = true; $('stop').disabled = false; $('status').textContent = '화면을 공유하고 있습니다.';
+      activeResolution = null; syncResolution();
     } catch (error) { $('status').textContent = '화면 공유를 시작하지 못했습니다: ' + error.message; }
   });
   function stop() {
     const old = stream; stream = null;
     if (old) old.getTracks().forEach(track => track.stop());
-    video.srcObject = null; $('share').disabled = false; $('stop').disabled = true;
-    for (const st of runtime.values()) st.samples = [];
+    video.srcObject = null; activeResolution = null; $('share').disabled = false; $('stop').disabled = true;
+    for (const st of runtime.values()) { st.samples = []; st.preview = null; if (!st.timer) st.text = '화면 공유 대기'; }
+    render();
     $('status').textContent = '화면 공유가 중지되었습니다.';
   }
   $('stop').addEventListener('click', stop);
@@ -193,11 +260,13 @@
     try {
       roiCanvas.width = video.videoWidth; roiCanvas.height = video.videoHeight;
       roiFrame.width = video.videoWidth; roiFrame.height = video.videoHeight;
+      roiFrameResolution = videoResolution();
       roiFrameContext.drawImage(video, 0, 0, roiFrame.width, roiFrame.height);
       beforeFit = null; $('undoRoiFit').disabled = true;
-      if (draftRoi) {
-        const x = draftRoi.x * roiCanvas.width, y = draftRoi.y * roiCanvas.height;
-        const side = Math.min(draftRoi.w * roiCanvas.width, draftRoi.h * roiCanvas.height, roiCanvas.width - x, roiCanvas.height - y);
+      const savedRoi = draftResolution === roiFrameResolution ? draftRoi : skills.find(skill => skill.id === editing)?.rois?.[roiFrameResolution];
+      if (savedRoi) {
+        const x = savedRoi.x * roiCanvas.width, y = savedRoi.y * roiCanvas.height;
+        const side = Math.min(savedRoi.w * roiCanvas.width, savedRoi.h * roiCanvas.height, roiCanvas.width - x, roiCanvas.height - y);
         selection = { x, y, w: side, h: side };
       } else selection = null;
       $('roiZoom').value = '1'; $('roiZoomValue').textContent = '100%';
@@ -291,7 +360,8 @@
   $('saveRoi').addEventListener('click', () => {
     if (!selection || selection.w < 8 || selection.h < 8) { $('roiError').textContent = '영역을 충분히 크게 지정하세요.'; return; }
     draftRoi = { x: selection.x / roiCanvas.width, y: selection.y / roiCanvas.height, w: selection.w / roiCanvas.width, h: selection.h / roiCanvas.height, aspect: roiCanvas.width / roiCanvas.height };
-    $('roiSummary').textContent = '영역이 지정되었습니다.'; $('editError').textContent = ''; $('roiDialog').close();
+    draftResolution = roiFrameResolution;
+    updateRoiSummary(); $('editError').textContent = ''; $('roiDialog').close();
   });
   function loadWorker() {
     if (workerPromise) return workerPromise;
@@ -301,11 +371,19 @@
     }).then(async () => { const worker = await Tesseract.createWorker('eng'); await worker.setParameters({ tessedit_char_whitelist: '0123456789:', tessedit_pageseg_mode: '7' }); return worker; }).catch(error => { workerPromise = null; throw error; });
     return workerPromise;
   }
-  function prepareImage(roi) {
+  function prepareImage(roi, showPreview) {
     const vw = video.videoWidth, vh = video.videoHeight;
     const x = Math.max(0, Math.floor(roi.x * vw)), y = Math.max(0, Math.floor(roi.y * vh));
     const w = Math.min(vw - x, Math.max(1, Math.round(roi.w * vw))), h = Math.min(vh - y, Math.max(1, Math.round(roi.h * vh)));
     canvas.width = w; canvas.height = h; ctx.drawImage(video, x, y, w, h, 0, 0, w, h);
+    let rawPreview = null;
+    if (showPreview) {
+      const preview = document.createElement('canvas');
+      const scale = Math.min(1, 160 / Math.max(w, h));
+      preview.width = Math.max(1, Math.round(w * scale)); preview.height = Math.max(1, Math.round(h * scale));
+      preview.getContext('2d').drawImage(canvas, 0, 0, preview.width, preview.height);
+      rawPreview = preview.toDataURL('image/png');
+    }
     const image = ctx.getImageData(0, 0, w, h), data = image.data;
     let count = 0, minX = w, minY = h, maxX = -1, maxY = -1;
     for (let i = 0; i < w * h; i++) {
@@ -314,13 +392,13 @@
       const v = yellow ? 0 : 255; data[p] = data[p + 1] = data[p + 2] = v; data[p + 3] = 255;
       if (yellow) { const px = i % w, py = Math.floor(i / w); minX = Math.min(minX, px); maxX = Math.max(maxX, px); minY = Math.min(minY, py); maxY = Math.max(maxY, py); count++; }
     }
-    if (count < 8) return null;
+    if (count < 8) return { canvas: null, signature: null, rawPreview };
     ctx.putImageData(image, 0, 0);
     const out = document.createElement('canvas'), scale = Math.max(1, Math.min(5, 60 / (maxY - minY + 1)));
     out.width = Math.ceil((maxX - minX + 1) * scale) + 20; out.height = Math.ceil((maxY - minY + 1) * scale) + 20;
     const target = out.getContext('2d'); target.fillStyle = '#fff'; target.fillRect(0, 0, out.width, out.height); target.imageSmoothingEnabled = false;
     target.drawImage(canvas, minX, minY, maxX - minX + 1, maxY - minY + 1, 10, 10, out.width - 20, out.height - 20);
-    return { canvas: out, signature: out.toDataURL() };
+    return { canvas: out, signature: out.toDataURL(), rawPreview };
   }
   async function recognize(image) {
     if (Object.hasOwn(cache, image.signature) && Number.isInteger(cache[image.signature]) && cache[image.signature] >= 0 && cache[image.signature] <= 86400) return cache[image.signature];
@@ -363,19 +441,23 @@
     const now = Date.now();
     for (const skill of skills) { const st = state(skill); if (st.timer) updateTimer(skill, st, now); }
     if (busy || !stream || !video.videoWidth || $('roiDialog').open) return;
-    const skill = skills.filter(x => x.enabled && x.roi && !state(x).timer && now >= state(x).next).sort((a, b) => state(a).next - state(b).next)[0];
+    syncResolution();
+    const skill = skills.filter(x => x.enabled && currentRoi(x) && !state(x).timer && now >= state(x).next).sort((a, b) => state(a).next - state(b).next)[0];
     if (!skill) return;
-    const st = state(skill), capturedStream = stream, capturedAt = Date.now();
+    const st = state(skill), capturedStream = stream, capturedAt = Date.now(), capturedResolution = activeResolution;
     st.next = capturedAt + Math.max(.5, Number($('interval').value) || 1) * 1000;
-    if (Math.abs(video.videoWidth / video.videoHeight / skill.roi.aspect - 1) > .03) { st.samples = []; setText(skill, '화면 비율이 변경됨: ROI 재지정'); return; }
     let image;
-    try { image = prepareImage(skill.roi); } catch { setText(skill, '영역을 읽지 못함'); return; }
-    if (!image) { st.samples = []; setText(skill, '숫자 찾는 중'); return; }
+    try { image = prepareImage(currentRoi(skill), visiblePreviews.has(skill.id)); } catch { setText(skill, '영역을 읽지 못함'); return; }
+    if (visiblePreviews.has(skill.id) && image.rawPreview) {
+      st.preview = { raw: image.rawPreview, processed: image.signature };
+      paintPreview(skill);
+    }
+    if (!image.canvas) { st.samples = []; setText(skill, '숫자 찾는 중'); return; }
     busy = true;
     try {
       setText(skill, '숫자 확인 중');
       const value = await recognize(image);
-      if (!skills.includes(skill) || runtime.get(skill.id) !== st || stream !== capturedStream) return;
+      if (!skills.includes(skill) || runtime.get(skill.id) !== st || stream !== capturedStream || videoResolution() !== capturedResolution) return;
       if (value === null || value > skill.cooldown || value <= 0) { st.samples = []; setText(skill, '숫자 확인 실패'); return; }
       const previous = st.samples.at(-1);
       if (previous) {
@@ -384,7 +466,7 @@
         if (elapsed < .25 || difference <= 0 || Math.abs(difference - elapsed) > 1.2) st.samples = [];
       }
       st.samples.push({ value, time: capturedAt, signature: image.signature });
-      if (st.samples.length >= 3) { confirm(skill, st); updateTimer(skill, st, Date.now()); }
+      if (st.samples.length >= 3) { confirm(skill, st); updateTimer(skill, st, Date.now()); paintPreview(skill); }
       else setText(skill, `${value}초 확인 (${st.samples.length}/3)`);
     } catch (error) { st.samples = []; setText(skill, '숫자 인식 오류'); $('status').textContent = error.message; }
     finally { busy = false; }

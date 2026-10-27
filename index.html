@@ -7,6 +7,7 @@
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #131820; color: #eef3f6; }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { margin: 0; }
     main { max-width: 1060px; padding: 28px 20px; margin: auto; }
     h1 { font-size: 25px; margin: 0; } h2 { font-size: 18px; margin: 0; }
@@ -26,6 +27,10 @@
     .card-head { justify-content: space-between; } .card-head strong { font-size: 16px; overflow-wrap: anywhere; }
     .timer { display: block; font-size: 24px; font-variant-numeric: tabular-nums; margin: 18px 0 4px; }
     .card-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .roi-preview-toggle { margin-top: 12px; }
+    .roi-previews { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .roi-previews figure { margin: 0; }
+    .roi-previews img { display: block; max-width: 128px; max-height: 128px; object-fit: contain; image-rendering: pixelated; background: #10161b; border: 1px solid #4b5964; }
     dialog { width: min(580px, calc(100% - 24px)); max-height: calc(100vh - 24px); overflow: auto; border: 1px solid #52616a; border-radius: 7px; background: #1b232a; color: inherit; padding: 20px; }
     dialog::backdrop { background: #000b; } .form-grid { display: grid; gap: 14px; margin: 18px 0; }
     #roiDialog { width: min(1100px, calc(100% - 24px)); }
@@ -71,7 +76,7 @@
   <div class="actions"><button id="autoFitRoi" type="button">자동 맞춤</button><button id="undoRoiFit" type="button" disabled>맞춤 되돌리기</button><button id="saveRoi" class="primary">영역 적용</button><button id="cancelRoi">취소</button></div>
 </dialog>
 <script defer src="./roi-fit.js?v=20261027-2"></script>
-<script defer src="./cooldown-core.js?v=1"></script>
-<script defer src="./skill-v2.js?v=20261027-3"></script>
+<script defer src="./cooldown-core.js?v=2"></script>
+<script defer src="./skill-v2.js?v=20261028-1"></script>
 </body>
 </html>
