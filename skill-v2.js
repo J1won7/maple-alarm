@@ -135,28 +135,55 @@
   $('stop').addEventListener('click', stop);
   $('selectRoi').addEventListener('click', () => {
     if (!stream || !video.videoWidth) { $('editError').textContent = 'ROI 지정을 위해 먼저 화면 공유를 시작하세요.'; return; }
-    roiCanvas.width = video.videoWidth; roiCanvas.height = video.videoHeight;
-    roiFrame.width = video.videoWidth; roiFrame.height = video.videoHeight;
-    roiFrameContext.drawImage(video, 0, 0, roiFrame.width, roiFrame.height);
-    beforeFit = null; $('undoRoiFit').disabled = true;
-    if (draftRoi) {
-      const x = draftRoi.x * roiCanvas.width, y = draftRoi.y * roiCanvas.height;
-      const side = Math.min(draftRoi.w * roiCanvas.width, draftRoi.h * roiCanvas.height, roiCanvas.width - x, roiCanvas.height - y);
-      selection = { x, y, w: side, h: side };
-    } else selection = null;
-    $('roiZoom').value = '1'; $('roiZoomValue').textContent = '100%';
-    $('roiError').textContent = ''; $('roiDialog').showModal(); resizeRoi(); draw();
+    try {
+      roiCanvas.width = video.videoWidth; roiCanvas.height = video.videoHeight;
+      roiFrame.width = video.videoWidth; roiFrame.height = video.videoHeight;
+      roiFrameContext.drawImage(video, 0, 0, roiFrame.width, roiFrame.height);
+      beforeFit = null; $('undoRoiFit').disabled = true;
+      if (draftRoi) {
+        const x = draftRoi.x * roiCanvas.width, y = draftRoi.y * roiCanvas.height;
+        const side = Math.min(draftRoi.w * roiCanvas.width, draftRoi.h * roiCanvas.height, roiCanvas.width - x, roiCanvas.height - y);
+        selection = { x, y, w: side, h: side };
+      } else selection = null;
+      $('roiZoom').value = '1'; $('roiZoomValue').textContent = '100%';
+      $('roiError').textContent = '';
+      $('editDialog').close();
+      $('roiDialog').showModal(); resizeRoi(false); draw();
+    } catch (error) {
+      if ($('roiDialog').open) $('roiDialog').close();
+      if (!$('editDialog').open) $('editDialog').showModal();
+      $('editError').textContent = 'ROI 화면을 열지 못했습니다. 화면 공유를 다시 시작해 주세요.';
+      console.error(error);
+    }
   });
-  function resizeRoi() {
+  function resizeRoi(preserveCenter = true) {
     const viewport = $('roiViewport');
     const zoom = Number($('roiZoom').value);
+    const oldWidth = roiCanvas.getBoundingClientRect().width;
+    const oldHeight = roiCanvas.getBoundingClientRect().height;
+    const centerX = oldWidth ? (viewport.scrollLeft + viewport.clientWidth / 2) / oldWidth : .5;
+    const centerY = oldHeight ? (viewport.scrollTop + viewport.clientHeight / 2) / oldHeight : .5;
     const fit = Math.min(viewport.clientWidth / roiCanvas.width, viewport.clientHeight / roiCanvas.height);
+    if (!Number.isFinite(fit) || fit <= 0) return;
     roiCanvas.style.width = `${roiCanvas.width * fit * zoom}px`;
     roiCanvas.style.height = `${roiCanvas.height * fit * zoom}px`;
+    if (preserveCenter) {
+      viewport.scrollLeft = centerX * roiCanvas.width * fit * zoom - viewport.clientWidth / 2;
+      viewport.scrollTop = centerY * roiCanvas.height * fit * zoom - viewport.clientHeight / 2;
+    } else { viewport.scrollLeft = 0; viewport.scrollTop = 0; }
     $('roiZoomValue').textContent = `${Math.round(zoom * 100)}%`;
+    $('roiZoomOut').disabled = zoom <= 1;
+    $('roiZoomIn').disabled = zoom >= 4;
   }
-  $('roiZoom').addEventListener('input', resizeRoi);
+  $('roiZoom').addEventListener('input', () => resizeRoi());
+  for (const [id, delta] of [['roiZoomOut', -.2], ['roiZoomIn', .2]]) {
+    $(id).addEventListener('click', () => {
+      $('roiZoom').value = String(Math.max(1, Math.min(4, Math.round((Number($('roiZoom').value) + delta) * 10) / 10)));
+      resizeRoi();
+    });
+  }
   window.addEventListener('resize', () => { if ($('roiDialog').open) resizeRoi(); });
+  $('roiDialog').addEventListener('close', () => { if (!$('editDialog').open) $('editDialog').showModal(); });
   function draw() {
     roiCtx.drawImage(roiFrame, 0, 0);
     if (selection) { roiCtx.strokeStyle = '#35dcc1'; roiCtx.lineWidth = Math.max(2, roiCanvas.width / 600); roiCtx.strokeRect(selection.x, selection.y, selection.w, selection.h); }
