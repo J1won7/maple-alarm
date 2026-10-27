@@ -133,9 +133,24 @@
   $('selectRoi').addEventListener('click', () => {
     if (!stream || !video.videoWidth) { $('editError').textContent = 'ROI 지정을 위해 먼저 화면 공유를 시작하세요.'; return; }
     roiCanvas.width = video.videoWidth; roiCanvas.height = video.videoHeight;
-    selection = draftRoi ? { x: draftRoi.x * roiCanvas.width, y: draftRoi.y * roiCanvas.height, w: draftRoi.w * roiCanvas.width, h: draftRoi.h * roiCanvas.height } : null;
-    $('roiError').textContent = ''; draw(); $('roiDialog').showModal();
+    if (draftRoi) {
+      const x = draftRoi.x * roiCanvas.width, y = draftRoi.y * roiCanvas.height;
+      const side = Math.min(draftRoi.w * roiCanvas.width, draftRoi.h * roiCanvas.height, roiCanvas.width - x, roiCanvas.height - y);
+      selection = { x, y, w: side, h: side };
+    } else selection = null;
+    $('roiZoom').value = '1'; $('roiZoomValue').textContent = '100%';
+    $('roiError').textContent = ''; $('roiDialog').showModal(); resizeRoi(); draw();
   });
+  function resizeRoi() {
+    const viewport = $('roiViewport');
+    const zoom = Number($('roiZoom').value);
+    const fit = Math.min(viewport.clientWidth / roiCanvas.width, viewport.clientHeight / roiCanvas.height);
+    roiCanvas.style.width = `${roiCanvas.width * fit * zoom}px`;
+    roiCanvas.style.height = `${roiCanvas.height * fit * zoom}px`;
+    $('roiZoomValue').textContent = `${Math.round(zoom * 100)}%`;
+  }
+  $('roiZoom').addEventListener('input', resizeRoi);
+  window.addEventListener('resize', () => { if ($('roiDialog').open) resizeRoi(); });
   function draw() {
     roiCtx.drawImage(video, 0, 0, roiCanvas.width, roiCanvas.height);
     if (selection) { roiCtx.strokeStyle = '#35dcc1'; roiCtx.lineWidth = Math.max(2, roiCanvas.width / 600); roiCtx.strokeRect(selection.x, selection.y, selection.w, selection.h); }
@@ -144,11 +159,19 @@
     const rect = roiCanvas.getBoundingClientRect();
     return { x: Math.max(0, Math.min(roiCanvas.width, (event.clientX - rect.left) * roiCanvas.width / rect.width)), y: Math.max(0, Math.min(roiCanvas.height, (event.clientY - rect.top) * roiCanvas.height / rect.height)) };
   }
-  function move(p) { selection = { x: Math.min(pointer.x, p.x), y: Math.min(pointer.y, p.y), w: Math.abs(pointer.x - p.x), h: Math.abs(pointer.y - p.y) }; draw(); }
+  function squareSelection(origin, destination, width, height) {
+    const dx = destination.x - origin.x, dy = destination.y - origin.y;
+    const horizontal = dx < 0 ? -1 : 1, vertical = dy < 0 ? -1 : 1;
+    const availableX = horizontal < 0 ? origin.x : width - origin.x;
+    const availableY = vertical < 0 ? origin.y : height - origin.y;
+    const side = Math.max(0, Math.min(Math.max(Math.abs(dx), Math.abs(dy)), availableX, availableY));
+    return { x: horizontal < 0 ? origin.x - side : origin.x, y: vertical < 0 ? origin.y - side : origin.y, w: side, h: side };
+  }
+  function move(p) { selection = squareSelection(pointer, p, roiCanvas.width, roiCanvas.height); draw(); }
   roiCanvas.addEventListener('pointerdown', event => { pointer = point(event); roiCanvas.setPointerCapture(event.pointerId); });
   roiCanvas.addEventListener('pointermove', event => { if (pointer) move(point(event)); });
   roiCanvas.addEventListener('pointerup', event => { if (pointer) { move(point(event)); pointer = null; } });
-  roiCanvas.addEventListener('pointercancel', () => { pointer = null; });
+  roiCanvas.addEventListener('pointercancel', () => { pointer = null; selection = null; draw(); });
   $('cancelRoi').addEventListener('click', () => $('roiDialog').close());
   $('saveRoi').addEventListener('click', () => {
     if (!selection || selection.w < 8 || selection.h < 8) { $('roiError').textContent = '영역을 충분히 크게 지정하세요.'; return; }
