@@ -66,8 +66,9 @@
   <h2>스킬 영역 지정</h2><p class="hint">공유 화면에서 스킬의 쿨타임 숫자가 표시되는 영역을 드래그하세요.</p>
   <div class="roi-tools"><label for="roiZoom">확대</label><input id="roiZoom" type="range" min="1" max="4" step="0.1" value="1"><span id="roiZoomValue">100%</span></div>
   <div id="roiViewport"><canvas id="roiCanvas"></canvas></div><p id="roiError" class="hint" role="alert"></p>
-  <div class="actions"><button id="saveRoi" class="primary">영역 적용</button><button id="cancelRoi">취소</button></div>
+  <div class="actions"><button id="autoFitRoi" type="button">자동 맞춤</button><button id="undoRoiFit" type="button" disabled>맞춤 되돌리기</button><button id="saveRoi" class="primary">영역 적용</button><button id="cancelRoi">취소</button></div>
 </dialog>
+<script defer src="./roi-fit.js"></script>
 <script defer src="./skill-v2.js"></script>
 </body>
 </html>

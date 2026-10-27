@@ -8,12 +8,15 @@
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const roiCanvas = $('roiCanvas');
   const roiCtx = roiCanvas.getContext('2d');
+  const roiFrame = document.createElement('canvas');
+  const roiFrameContext = roiFrame.getContext('2d', { willReadFrequently: true });
   const runtime = new Map();
   let skills = read(storage, []);
   if (!Array.isArray(skills)) skills = [];
   let cache = read(cacheKey, {});
   if (!cache || typeof cache !== 'object' || Array.isArray(cache)) cache = {};
   let workerPromise, stream = null, editing = null, draftRoi = null, selection = null, pointer = null, busy = false, audioContext = null;
+  let beforeFit = null;
   $('interval').value = localStorage.getItem(storage + '.interval') || '1';
   $('volume').value = localStorage.getItem(storage + '.volume') || '100';
   $('notifications').checked = localStorage.getItem(storage + '.notifications') === 'true';
@@ -133,6 +136,9 @@
   $('selectRoi').addEventListener('click', () => {
     if (!stream || !video.videoWidth) { $('editError').textContent = 'ROI 지정을 위해 먼저 화면 공유를 시작하세요.'; return; }
     roiCanvas.width = video.videoWidth; roiCanvas.height = video.videoHeight;
+    roiFrame.width = video.videoWidth; roiFrame.height = video.videoHeight;
+    roiFrameContext.drawImage(video, 0, 0, roiFrame.width, roiFrame.height);
+    beforeFit = null; $('undoRoiFit').disabled = true;
     if (draftRoi) {
       const x = draftRoi.x * roiCanvas.width, y = draftRoi.y * roiCanvas.height;
       const side = Math.min(draftRoi.w * roiCanvas.width, draftRoi.h * roiCanvas.height, roiCanvas.width - x, roiCanvas.height - y);
@@ -152,7 +158,7 @@
   $('roiZoom').addEventListener('input', resizeRoi);
   window.addEventListener('resize', () => { if ($('roiDialog').open) resizeRoi(); });
   function draw() {
-    roiCtx.drawImage(video, 0, 0, roiCanvas.width, roiCanvas.height);
+    roiCtx.drawImage(roiFrame, 0, 0);
     if (selection) { roiCtx.strokeStyle = '#35dcc1'; roiCtx.lineWidth = Math.max(2, roiCanvas.width / 600); roiCtx.strokeRect(selection.x, selection.y, selection.w, selection.h); }
   }
   function point(event) {
@@ -168,10 +174,37 @@
     return { x: horizontal < 0 ? origin.x - side : origin.x, y: vertical < 0 ? origin.y - side : origin.y, w: side, h: side };
   }
   function move(p) { selection = squareSelection(pointer, p, roiCanvas.width, roiCanvas.height); draw(); }
-  roiCanvas.addEventListener('pointerdown', event => { pointer = point(event); roiCanvas.setPointerCapture(event.pointerId); });
+  roiCanvas.addEventListener('pointerdown', event => { pointer = point(event); beforeFit = null; $('undoRoiFit').disabled = true; $('roiError').textContent = ''; roiCanvas.setPointerCapture(event.pointerId); });
   roiCanvas.addEventListener('pointermove', event => { if (pointer) move(point(event)); });
   roiCanvas.addEventListener('pointerup', event => { if (pointer) { move(point(event)); pointer = null; } });
   roiCanvas.addEventListener('pointercancel', () => { pointer = null; selection = null; draw(); });
+  $('autoFitRoi').addEventListener('click', () => {
+    if (!selection || selection.w < 8) { $('roiError').textContent = '먼저 스킬 아이콘 주변을 드래그하세요.'; return; }
+    if (selection.w > 1000) { $('roiError').textContent = '자동 맞춤을 위해 스킬 아이콘에 더 가깝게 영역을 지정하세요.'; return; }
+    const margin = Math.ceil(selection.w * .55) + 3;
+    const x = Math.max(0, Math.floor(selection.x - margin));
+    const y = Math.max(0, Math.floor(selection.y - margin));
+    const right = Math.min(roiFrame.width, Math.ceil(selection.x + selection.w + margin));
+    const bottom = Math.min(roiFrame.height, Math.ceil(selection.y + selection.h + margin));
+    try {
+      const image = roiFrameContext.getImageData(x, y, right - x, bottom - y);
+      const result = window.fitSkillRoi(image, selection, x, y);
+      if (!result) { $('roiError').textContent = '뚜렷한 사각형을 찾지 못했습니다. 영역을 더 정확히 지정해 주세요.'; return; }
+      beforeFit = { ...selection };
+      selection = { x: result.x, y: result.y, w: result.w, h: result.h };
+      $('undoRoiFit').disabled = false;
+      $('roiError').textContent = '자동 맞춤 결과를 확인하고 영역을 적용하세요.';
+      draw();
+    } catch (error) {
+      $('roiError').textContent = '자동 맞춤에 실패했습니다. 선택한 영역을 그대로 사용할 수 있습니다.';
+      console.error(error);
+    }
+  });
+  $('undoRoiFit').addEventListener('click', () => {
+    if (!beforeFit) return;
+    selection = beforeFit; beforeFit = null; $('undoRoiFit').disabled = true;
+    $('roiError').textContent = '자동 맞춤 전의 영역으로 되돌렸습니다.'; draw();
+  });
   $('cancelRoi').addEventListener('click', () => $('roiDialog').close());
   $('saveRoi').addEventListener('click', () => {
     if (!selection || selection.w < 8 || selection.h < 8) { $('roiError').textContent = '영역을 충분히 크게 지정하세요.'; return; }
